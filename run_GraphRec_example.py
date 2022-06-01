@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 from torch.nn import init
@@ -117,6 +118,27 @@ def test(model, device, test_loader):
     mae = mean_absolute_error(tmp_pred, target)
     return expected_rmse, mae
 
+def get_top_k_recommendations(model, device, target_users, history_u_lists, history_v_lists, k):
+    model.eval()
+    all_items = list(set(history_v_lists.keys()))
+    # {user_id:[item_id1, ..., item_idk]}
+    target_users_recommendations = {}
+    with torch.no_grad():
+        for user_id in target_users:
+            if user_id not in history_u_lists:
+                continue
+            candidate_items = [item_id for item_id in all_items if item_id not in history_u_lists[user_id]]
+            test_u = torch.tensor(np.repeat(user_id, len(candidate_items))).to(device)
+            test_v = torch.tensor(candidate_items).to(device)
+            # multiply this with the mask of excluded recommendations derived from target_users_items
+            val_output = model.forward(test_u, test_v).data.cpu().numpy()
+            print(len(val_output))
+            topk_prediction_indices = np.argpartition(val_output, -k)[-k:]
+            topk_prediction_indices_sorted = list(np.flip(topk_prediction_indices[np.argsort(val_output[topk_prediction_indices])]))
+            topk_item_ids = [candidate_items[i] for i in topk_prediction_indices_sorted]
+            target_users_recommendations[user_id] = topk_item_ids
+    return target_users_recommendations
+
 
 def main():
     # Training settings
@@ -125,7 +147,8 @@ def main():
     parser.add_argument('--embed_dim', type=int, default=64, metavar='N', help='embedding size')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR', help='learning rate')
     parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N', help='input batch size for testing')
-    parser.add_argument('--epochs', type=int, default=100, metavar='N', help='number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=5, metavar='N', help='number of epochs to train')
+    parser.add_argument('--k', type=int, default=10, metavar='N', help='number of recommendations to generate per user')
     args = parser.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -135,6 +158,7 @@ def main():
     device = torch.device("cuda" if use_cuda else "cpu")
 
     embed_dim = args.embed_dim
+    dataset_name = "toy_dataset"
     dir_data = './data/toy_dataset'
 
     path_data = dir_data + ".pickle"
@@ -184,30 +208,41 @@ def main():
 
     # model
     graphrec = GraphRec(enc_u, enc_v_history, r2e).to(device)
-    optimizer = torch.optim.RMSprop(graphrec.parameters(), lr=args.lr, alpha=0.9)
+    # optimizer = torch.optim.RMSprop(graphrec.parameters(), lr=args.lr, alpha=0.9)
 
-    best_rmse = 9999.0
-    best_mae = 9999.0
-    endure_count = 0
+    # best_rmse = 9999.0
+    # best_mae = 9999.0
+    # endure_count = 0
 
-    for epoch in range(1, args.epochs + 1):
+    # for epoch in range(1, args.epochs + 1):
 
-        train(graphrec, device, train_loader, optimizer, epoch, best_rmse, best_mae)
-        expected_rmse, mae = test(graphrec, device, test_loader)
-        # please add the validation set to tune the hyper-parameters based on your datasets.
+    #    train(graphrec, device, train_loader, optimizer, epoch, best_rmse, best_mae)
+    #    expected_rmse, mae = test(graphrec, device, test_loader)
+    #    # please add the validation set to tune the hyper-parameters based on your datasets.
 
+    #    if not os.path.exists('./checkpoint/' + dataset_name):
+    #        os.makedirs('./checkpoint/' + dataset_name)
         # early stopping (no validation set in toy dataset)
-        if best_rmse > expected_rmse:
-            best_rmse = expected_rmse
-            best_mae = mae
-            endure_count = 0
-        else:
-            endure_count += 1
-        print("rmse: %.4f, mae:%.4f " % (expected_rmse, mae))
+    #    if best_rmse > expected_rmse:
+    #        best_rmse = expected_rmse
+    #        best_mae = mae
+    #        endure_count = 0
+    #        best_model = copy.deepcopy(graphrec)
+    #        torch.save(best_model.state_dict(), './checkpoint/' + dataset_name + '/model')
+    #    else:
+    #        endure_count += 1
+    #    print("rmse: %.4f, mae:%.4f " % (expected_rmse, mae))
 
-        if endure_count > 5:
-            break
+    #    if endure_count > 5:
+    #        break
 
+    graphrec.load_state_dict(torch.load('./checkpoint/' + dataset_name + '/model'))
+    graphrec.eval()
+
+    target_users = list(set(test_u))
+    target_users_recommendations = get_top_k_recommendations(graphrec, device, target_users, history_u_lists, history_v_lists, args.k)
+    with open(dataset_name + '_recommendations.pickle', 'wb') as handle:
+        pickle.dump(target_users_recommendations, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 if __name__ == "__main__":
     main()
