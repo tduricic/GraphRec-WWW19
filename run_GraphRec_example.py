@@ -22,6 +22,7 @@ import argparse
 import os
 from os import path
 from utils import utils
+from tqdm import tqdm
 
 """
 GraphRec: Graph Neural Networks for Social Recommendation. 
@@ -120,13 +121,14 @@ def test(model, device, test_loader):
     mae = mean_absolute_error(tmp_pred, target)
     return expected_rmse, mae
 
-def get_top_k_recommendations(model, device, dataset_name, target_users, history_u_lists, history_v_lists, k):
+def get_top_k_recommendations(model, device, dataset_name, target_users, history_u_lists, history_v_lists, k, use_test_set_candidates, test_v):
     B, users, items = utils.create_user_item_bipartite_graph(history_u_lists)
 
     user_communities_interactions_dict_filepath = './results/' + dataset_name + '/user_communities_interactions_dict.pickle'
     item_community_dict_filepath = './results/' + dataset_name + '/item_community_dict.pickle'
 
-    if path.exists() and path.exists('./results/' + dataset_name + '/user_communities_interactions_dict.pickle'):
+    if path.exists('./results/' + dataset_name + '/user_communities_interactions_dict.pickle') and \
+            path.exists('./results/' + dataset_name + '/item_community_dict.pickle'):
         user_communities_interactions_dict = pickle.load(user_communities_interactions_dict_filepath)
         item_community_dict = pickle.load(item_community_dict_filepath)
 
@@ -143,10 +145,15 @@ def get_top_k_recommendations(model, device, dataset_name, target_users, history
     # {user_id:[item_id1, ..., item_idk]}
     results = {}
     with torch.no_grad():
-        for user_id in target_users:
+        print('Generating recommendations...')
+        for user_id in tqdm(target_users):
             if user_id not in history_u_lists:
                 continue
-            candidate_items = [item_id for item_id in all_items if item_id not in history_u_lists[user_id]]
+            if use_test_set_candidates:
+                candidate_items = [item_id for item_id in list(set(test_v)) if item_id not in history_u_lists[user_id]]
+            else:
+                candidate_items = [item_id for item_id in all_items if item_id not in history_u_lists[user_id]]
+            print(len(candidate_items))
             test_u = torch.tensor(np.repeat(user_id, len(candidate_items))).to(device)
             test_v = torch.tensor(candidate_items).to(device)
             # multiply this with the mask of excluded recommendations derived from target_users_items
@@ -168,8 +175,6 @@ def get_top_k_recommendations(model, device, dataset_name, target_users, history
                 'entropy_item_diversity' : entropy_item_diversity,
                 'weighted_average_item_diversity' : weighted_average_item_diversity,
             }
-
-            print(results[user_id])
 
     return results
 
@@ -224,9 +229,9 @@ def train_and_store_model(model, epochs, device, train_loader, test_loader, lr, 
            break
 
 
-def evaluate_and_store_recommendations(model, device, dataset_name, test_u, history_u_lists, history_v_lists, k):
+def evaluate_and_store_recommendations(model, device, dataset_name, test_u, history_u_lists, history_v_lists, k, use_test_set_candidates, test_v):
     target_users = list(set(test_u))
-    results = get_top_k_recommendations(model, device, dataset_name, target_users, history_u_lists, history_v_lists, k)
+    results = get_top_k_recommendations(model, device, dataset_name, target_users, history_u_lists, history_v_lists, k, use_test_set_candidates, test_v)
 
     return results
 
@@ -298,9 +303,10 @@ def main():
     parser.add_argument('--gpu_id', type=int, default=0, metavar='N', help='gpu id')
     parser.add_argument('--dataset_name', type=str, default='toy_dataset', help='dataset name')
     parser.add_argument('--load_model', type=bool, default=False, help='if this is False, then the model is trained from scratch')
+    parser.add_argument('--use_test_set_candidates', type=bool, default=True, help='if this is True, then the candidate items come only from the test set')
     args = parser.parse_args()
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
+    # os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
     use_cuda = False
     if torch.cuda.is_available():
         use_cuda = True
@@ -365,7 +371,7 @@ def main():
     model.load_state_dict(torch.load('./checkpoint/' + args.dataset_name + '/model'))
     model.eval()
 
-    results = evaluate_and_store_recommendations(model, device, args.dataset_name, test_u, history_u_lists, history_v_lists, args.k)
+    results = evaluate_and_store_recommendations(model, device, args.dataset_name, test_u, history_u_lists, history_v_lists, args.k, args.use_test_set_candidates, test_v)
 
     with open('./results/' + args.dataset_name + '/recommendations.pickle', 'wb') as handle:
         pickle.dump(results, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -378,7 +384,7 @@ def main():
         'num_users' : num_users,
         'num_items' : num_items,
         'num_recommended_items' : unique_recommended_items,
-        'item_coverage' : round(unique_recommended_items/num_items, 2)
+        'item_coverage' : round(len(unique_recommended_items)/num_items, 2)
     }
 
     with open('./results/' + args.dataset_name + '/users_items_stats.pickle', 'wb', 'wb') as handle:
