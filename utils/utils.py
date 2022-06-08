@@ -165,15 +165,14 @@ def create_ratings_list(ratings_list):
     return sorted(list(set(ratings_list)))
 
 
-def preprocess_data_test(train_dict, test_dict, social_connections_filepath):
+def preprocess_data_test(train_dict, test_dict):
     history_u_lists = create_history_u_lists(train_dict)
     history_ur_lists = create_history_ur_lists(train_dict)
     history_v_lists = create_history_v_lists(train_dict)
     history_vr_lists = create_history_vr_lists(train_dict)
     train_u, train_v, train_r = create_uvr(train_dict)
     test_u, test_v, test_r = create_uvr(test_dict)
-    social_adj_lists = create_social_adj_lists(social_connections_filepath)
     ratings_list = create_ratings_list(train_r + test_r)
 
     return history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, \
-           train_u, train_v, train_r, test_u, test_v, test_r, social_adj_lists, ratings_list
+           train_u, train_v, train_r, test_u, test_v, test_r, ratings_list
