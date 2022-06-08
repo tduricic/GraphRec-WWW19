@@ -248,7 +248,7 @@ def remap_user_item_ids(train_dict, test_dict, social_adj_lists):
             user_id_mapping[user_id] = user_id_counter
             user_id_mapping_reversed[user_id_counter] = user_id
             user_id_counter += 1
-        if user_id not in train_dict_remapped:
+        if user_id_mapping[user_id] not in train_dict_remapped:
             train_dict_remapped[user_id_mapping[user_id]] = {}
         for item_id in train_dict[user_id]:
             if item_id not in item_id_mapping:
@@ -293,7 +293,7 @@ def main():
     parser.add_argument('--embed_dim', type=int, default=64, metavar='N', help='embedding size')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR', help='learning rate')
     parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N', help='input batch size for testing')
-    parser.add_argument('--epochs', type=int, default=50, metavar='N', help='number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=1, metavar='N', help='number of epochs to train')
     parser.add_argument('--k', type=int, default=10, metavar='N', help='number of recommendations to generate per user')
     parser.add_argument('--gpu_id', type=int, default=0, metavar='N', help='gpu id')
     parser.add_argument('--dataset_name', type=str, default='toy_dataset', help='dataset name')
@@ -317,8 +317,8 @@ def main():
     train_dict = utils.create_user_item_rating_dict_from_file(train_filepath)
     test_dict = utils.create_user_item_rating_dict_from_file(test_filepath)
     social_adj_lists = utils.create_social_adj_lists(social_connections_filepath)
-    
-    train_dict_remapped, test_dict_remapped, social_adj_lists_remapped, user_id_mapping, item_id_mapping = \
+
+    train_dict_remapped, test_dict_remapped, social_adj_lists_remapped, _, _, _, _ = \
         remap_user_item_ids(train_dict, test_dict, social_adj_lists)
 
     history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, \
@@ -333,10 +333,10 @@ def main():
                                              torch.FloatTensor(test_r))
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=True)
-    # num_users = history_u_lists.__len__()
-    # num_items = history_v_lists.__len__()
-    num_users = max(set(train_u + test_u)) + 1
-    num_items = max(set(train_v + test_v)) + 1
+    num_users = history_u_lists.__len__()
+    num_items = history_v_lists.__len__()
+    # num_users = max(set(train_u + test_u)) + 1
+    # num_items = max(set(train_v + test_v)) + 1
     num_ratings = ratings_list.__len__()
 
     u2e = nn.Embedding(num_users, args.embed_dim).to(device)
