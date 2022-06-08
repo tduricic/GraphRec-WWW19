@@ -20,6 +20,9 @@ from math import sqrt
 import datetime
 import argparse
 import os
+import networkx as nx
+from networkx.algorithms import bipartite
+import community as community_louvain
 
 """
 GraphRec: Graph Neural Networks for Social Recommendation. 
@@ -119,10 +122,13 @@ def test(model, device, test_loader):
     return expected_rmse, mae
 
 def get_top_k_recommendations(model, device, target_users, history_u_lists, history_v_lists, k):
+    B, users, items = create_user_item_bipartite_graph(history_u_lists)
+    user_communities_interactions_dict, item_community_dict = create_user_communities_interaction_dict(B, items, history_u_lists)
+
     model.eval()
     all_items = list(set(history_v_lists.keys()))
     # {user_id:[item_id1, ..., item_idk]}
-    target_users_recommendations = {}
+    results = {}
     with torch.no_grad():
         for user_id in target_users:
             if user_id not in history_u_lists:
@@ -136,48 +142,193 @@ def get_top_k_recommendations(model, device, target_users, history_u_lists, hist
             topk_prediction_indices = np.argpartition(val_output, -k)[-k:]
             topk_prediction_indices_sorted = list(np.flip(topk_prediction_indices[np.argsort(val_output[topk_prediction_indices])]))
             topk_item_ids = [candidate_items[i] for i in topk_prediction_indices_sorted]
-            target_users_recommendations[user_id] = topk_item_ids
-    return target_users_recommendations
+
+            user_item_communities = [item_community_dict[item_id] for item_id in history_u_lists[user_id]]
+            user_diversity = entropy_label_distribution(user_item_communities)
+
+            recommended_item_communities = [item_community_dict[item_id] for item_id in topk_item_ids]
+            recommendation_diversity = entropy_label_distribution(recommended_item_communities)
+
+            results[user_id]['recommendations'] = topk_item_ids
+            results[user_id]['user_diversity'] = user_diversity
+            results[user_id]['recommended_item_diversity'] = recommendation_diversity
+
+            print(results[user_id])
+
+    return results
+
+def train_and_store_model(model, epochs, device, train_loader, test_loader, lr, dataset_name):
+    """
+    ## toy dataset 
+    history_u_lists, history_ur_lists:  user's purchased history (item set in training set), and his/her rating score (dict)
+    history_v_lists, history_vr_lists:  user set (in training set) who have interacted with the item, and rating score (dict)
+
+    train_u, train_v, train_r: training_set (user, item, rating)
+    test_u, test_v, test_r: testing set (user, item, rating)
+
+    # please add the validation set
+
+    social_adj_lists: user's connected neighborhoods
+    ratings_list: rating value from 0.5 to 4.0 (8 opinion embeddings)
+    """
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, alpha=0.9)
+
+    best_rmse = 9999.0
+    best_mae = 9999.0
+    endure_count = 0
+
+    for epoch in range(1, epochs + 1):
+
+       train(model, device, train_loader, optimizer, epoch, best_rmse, best_mae)
+       expected_rmse, mae = test(model, device, test_loader)
+       # please add the validation set to tune the hyper-parameters based on your datasets.
+
+       if not os.path.exists('./checkpoint/' + dataset_name):
+           os.makedirs('./checkpoint/' + dataset_name)
+    # early stopping (no validation set in toy dataset)
+       if best_rmse > expected_rmse:
+           best_rmse = expected_rmse
+           best_mae = mae
+           endure_count = 0
+           best_model = copy.deepcopy(model)
+           torch.save(best_model.state_dict(), './checkpoint/' + dataset_name + '/model')
+       else:
+           endure_count += 1
+       print("rmse: %.4f, mae:%.4f " % (expected_rmse, mae))
+
+       if endure_count > 5:
+           break
+
+
+def evaluate_and_store_recommendations(model, device, test_u, history_u_lists, history_v_lists, k, recommendations_filepath):
+    target_users = list(set(test_u))
+    results = get_top_k_recommendations(model, device, target_users, history_u_lists, history_v_lists, k)
+    with open(recommendations_filepath, 'wb') as handle:
+        pickle.dump(results, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    return results
+
+def create_user_item_bipartite_graph(user_items_dict):
+    users = set()
+    items = set()
+    edges = []
+
+    for user_id in user_items_dict:
+        for item_id in user_items_dict[user_id]:
+            users.add(user_id)
+            items.add(item_id)
+            edges.append((user_id, item_id))
+
+    B = nx.Graph()
+    B.add_nodes_from(users, bipartite=0)
+    B.add_nodes_from(items, bipartite=1)
+    B.add_edges_from(edges)
+
+    return B, users, items
+
+
+def create_user_communities_interaction_dict(B, items, user_items_dict):
+    projected_G = bipartite.projected_graph(B, items)
+    item_community_dict = community_louvain.best_partition(projected_G)
+    community_lists = {}
+    for key in item_community_dict:
+        if item_community_dict[key] not in community_lists:
+            community_lists[item_community_dict[key]] = []
+            community_lists[item_community_dict[key]].append(key)
+        else:
+            community_lists[item_community_dict[key]].append(key)
+
+    user_communities_interactions_dict = {}
+    for userId in user_items_dict:
+        if userId not in user_communities_interactions_dict:
+            user_communities_interactions_dict[userId] = [0] * len(community_lists)
+        for itemId in user_items_dict[userId]:
+            user_communities_interactions_dict[userId][item_community_dict[itemId]] += 1
+
+    return user_communities_interactions_dict, item_community_dict
+
+
+def calculate_weighted_average_user_diversities(user_communities_interactions_dict):
+    user_diversities = {}
+    for userId in user_communities_interactions_dict:
+        user_diversities[userId] = calculate_weighted_average_diversity(user_communities_interactions_dict[userId])
+
+
+def calculate_weighted_average_diversity(user_communities_interactions):
+    user_community_vector = np.array(user_communities_interactions)
+    user_diversity = np.sum(user_community_vector / np.max(user_community_vector)) / user_community_vector.shape[0]
+    return user_diversity
+
+
+# def create_user_diversity_dict(history_u_lists):
+#     B, users, items = create_user_item_bipartite_graph(history_u_lists)
+#
+#     user_communities_interactions_dict, item_community_dict = create_user_communities_interaction_dict(B, items, history_u_lists)
+#
+#     # user_weighted_average_diversities = calculate_weighted_average_user_diversities(user_communities_interactions_dict)
+#
+#     #return user_weighted_average_diversities, item_community_dict
+#
+#     user_entropy_diversity_dict = calculate_item_diversities(history_u_lists, item_community_dict)
+#
+#     return user_entropy_diversity_dict, item_community_dict
+
+
+# Compute entropy of label distribution
+def entropy_label_distribution(labels):
+    n_labels = len(labels)
+    if n_labels <= 1:
+        return 0
+    value, counts = np.unique(labels, return_counts=True)
+    probs = counts / np.float32(n_labels)
+    n_classes = np.count_nonzero(probs)
+    if n_classes <= 1:
+        return 0.0
+    # Compute entropy
+    ent = 0.0
+    for p in probs:
+        ent -= p * np.log(p)
+    return ent
+
+
+def calculate_item_diversities(user_items_dict, item_community_dict):
+    user_recommendation_diversity_dict = {}
+    for user_id in user_items_dict:
+        item_communities = [item_community_dict[item_id] for item_id in user_items_dict[user_id]]
+        item_diversity = entropy_label_distribution(item_communities)
+        user_recommendation_diversity_dict[user_id] = item_diversity
+    return user_recommendation_diversity_dict
 
 
 def main():
+
     # Training settings
     parser = argparse.ArgumentParser(description='Social Recommendation: GraphRec model')
     parser.add_argument('--batch_size', type=int, default=128, metavar='N', help='input batch size for training')
     parser.add_argument('--embed_dim', type=int, default=64, metavar='N', help='embedding size')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR', help='learning rate')
     parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N', help='input batch size for testing')
-    parser.add_argument('--epochs', type=int, default=5, metavar='N', help='number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=100, metavar='N', help='number of epochs to train')
     parser.add_argument('--k', type=int, default=10, metavar='N', help='number of recommendations to generate per user')
+    parser.add_argument('--gpu_id', type=int, default=0, metavar='N', help='gpu id')
+    parser.add_argument('--dataset_name', type=str, default='toy_dataset', help='dataset name')
+    parser.add_argument('--load_model', type=bool, default=True, help='if this is False, then the model is trained from scratch')
     args = parser.parse_args()
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
     use_cuda = False
     if torch.cuda.is_available():
         use_cuda = True
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    embed_dim = args.embed_dim
-    dataset_name = "toy_dataset"
-    dir_data = './data/toy_dataset'
+    dir_data = './data/' + args.dataset_name
 
     path_data = dir_data + ".pickle"
     data_file = open(path_data, 'rb')
-    history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, test_u, test_v, test_r, social_adj_lists, ratings_list = pickle.load(
-        data_file)
-    """
-    ## toy dataset 
-    history_u_lists, history_ur_lists:  user's purchased history (item set in training set), and his/her rating score (dict)
-    history_v_lists, history_vr_lists:  user set (in training set) who have interacted with the item, and rating score (dict)
-    
-    train_u, train_v, train_r: training_set (user, item, rating)
-    test_u, test_v, test_r: testing set (user, item, rating)
-    
-    # please add the validation set
-    
-    social_adj_lists: user's connected neighborhoods
-    ratings_list: rating value from 0.5 to 4.0 (8 opinion embeddings)
-    """
+
+    # TODO instead of pickle.load, this should be loaded from the train/test files
+    history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, \
+    test_u, test_v, test_r, social_adj_lists, ratings_list = pickle.load(data_file)
 
     trainset = torch.utils.data.TensorDataset(torch.LongTensor(train_u), torch.LongTensor(train_v),
                                               torch.FloatTensor(train_r))
@@ -189,60 +340,39 @@ def main():
     num_items = history_v_lists.__len__()
     num_ratings = ratings_list.__len__()
 
-    u2e = nn.Embedding(num_users, embed_dim).to(device)
-    v2e = nn.Embedding(num_items, embed_dim).to(device)
-    r2e = nn.Embedding(num_ratings, embed_dim).to(device)
+    u2e = nn.Embedding(num_users, args.embed_dim).to(device)
+    v2e = nn.Embedding(num_items, args.embed_dim).to(device)
+    r2e = nn.Embedding(num_ratings, args.embed_dim).to(device)
 
     # user feature
     # features: item * rating
-    agg_u_history = UV_Aggregator(v2e, r2e, u2e, embed_dim, cuda=device, uv=True)
-    enc_u_history = UV_Encoder(u2e, embed_dim, history_u_lists, history_ur_lists, agg_u_history, cuda=device, uv=True)
-    # neighobrs
-    agg_u_social = Social_Aggregator(lambda nodes: enc_u_history(nodes).t(), u2e, embed_dim, cuda=device)
-    enc_u = Social_Encoder(lambda nodes: enc_u_history(nodes).t(), embed_dim, social_adj_lists, agg_u_social,
+    agg_u_history = UV_Aggregator(v2e, r2e, u2e, args.embed_dim, cuda=device, uv=True)
+    enc_u_history = UV_Encoder(u2e, args.embed_dim, history_u_lists, history_ur_lists, agg_u_history, cuda=device,
+                               uv=True)
+    # neighbors
+    agg_u_social = Social_Aggregator(lambda nodes: enc_u_history(nodes).t(), u2e, args.embed_dim, cuda=device)
+    enc_u = Social_Encoder(lambda nodes: enc_u_history(nodes).t(), args.embed_dim, social_adj_lists, agg_u_social,
                            base_model=enc_u_history, cuda=device)
 
     # item feature: user * rating
-    agg_v_history = UV_Aggregator(v2e, r2e, u2e, embed_dim, cuda=device, uv=False)
-    enc_v_history = UV_Encoder(v2e, embed_dim, history_v_lists, history_vr_lists, agg_v_history, cuda=device, uv=False)
+    agg_v_history = UV_Aggregator(v2e, r2e, u2e, args.embed_dim, cuda=device, uv=False)
+    enc_v_history = UV_Encoder(v2e, args.embed_dim, history_v_lists, history_vr_lists, agg_v_history, cuda=device,
+                               uv=False)
 
     # model
-    graphrec = GraphRec(enc_u, enc_v_history, r2e).to(device)
-    # optimizer = torch.optim.RMSprop(graphrec.parameters(), lr=args.lr, alpha=0.9)
+    model = GraphRec(enc_u, enc_v_history, r2e).to(device)
 
-    # best_rmse = 9999.0
-    # best_mae = 9999.0
-    # endure_count = 0
+    if args.load_model is False:
+        train_and_store_model(model, args.epochs, device, train_loader, test_loader, args.lr, args.dataset_name)
 
-    # for epoch in range(1, args.epochs + 1):
+    model.load_state_dict(torch.load('./checkpoint/' + args.dataset_name + '/model'))
+    model.eval()
 
-    #    train(graphrec, device, train_loader, optimizer, epoch, best_rmse, best_mae)
-    #    expected_rmse, mae = test(graphrec, device, test_loader)
-    #    # please add the validation set to tune the hyper-parameters based on your datasets.
+    # user_diversities, item_community_dict = create_user_diversity_dict(history_u_lists)
 
-    #    if not os.path.exists('./checkpoint/' + dataset_name):
-    #        os.makedirs('./checkpoint/' + dataset_name)
-        # early stopping (no validation set in toy dataset)
-    #    if best_rmse > expected_rmse:
-    #        best_rmse = expected_rmse
-    #        best_mae = mae
-    #        endure_count = 0
-    #        best_model = copy.deepcopy(graphrec)
-    #        torch.save(best_model.state_dict(), './checkpoint/' + dataset_name + '/model')
-    #    else:
-    #        endure_count += 1
-    #    print("rmse: %.4f, mae:%.4f " % (expected_rmse, mae))
+    results = evaluate_and_store_recommendations(model, device, test_u, history_u_lists, history_v_lists, args.k,
+                                                 './results/' + args.dataset_name + '_recommendations.pickle')
 
-    #    if endure_count > 5:
-    #        break
-
-    graphrec.load_state_dict(torch.load('./checkpoint/' + dataset_name + '/model'))
-    graphrec.eval()
-
-    target_users = list(set(test_u))
-    target_users_recommendations = get_top_k_recommendations(graphrec, device, target_users, history_u_lists, history_v_lists, args.k)
-    with open(dataset_name + '_recommendations.pickle', 'wb') as handle:
-        pickle.dump(target_users_recommendations, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 if __name__ == "__main__":
     main()
