@@ -20,9 +20,8 @@ from math import sqrt
 import datetime
 import argparse
 import os
-import networkx as nx
-from networkx.algorithms import bipartite
-import community as community_louvain
+from os import path
+from utils import utils
 
 """
 GraphRec: Graph Neural Networks for Social Recommendation. 
@@ -121,9 +120,23 @@ def test(model, device, test_loader):
     mae = mean_absolute_error(tmp_pred, target)
     return expected_rmse, mae
 
-def get_top_k_recommendations(model, device, target_users, history_u_lists, history_v_lists, k):
-    B, users, items = create_user_item_bipartite_graph(history_u_lists)
-    user_communities_interactions_dict, item_community_dict = create_user_communities_interaction_dict(B, items, history_u_lists)
+def get_top_k_recommendations(model, device, dataset_name, target_users, history_u_lists, history_v_lists, k):
+    B, users, items = utils.create_user_item_bipartite_graph(history_u_lists)
+
+    user_communities_interactions_dict_filepath = './results/' + dataset_name + '/user_communities_interactions_dict.pickle'
+    item_community_dict_filepath = './results/' + dataset_name + '/item_community_dict.pickle'
+
+    if path.exists() and path.exists('./results/' + dataset_name + '/user_communities_interactions_dict.pickle'):
+        user_communities_interactions_dict = pickle.load(user_communities_interactions_dict_filepath)
+        item_community_dict = pickle.load(item_community_dict_filepath)
+
+        with open(user_communities_interactions_dict_filepath, 'wb') as handle:
+            pickle.dump(user_communities_interactions_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        with open(item_community_dict_filepath, 'wb') as handle:
+            pickle.dump(item_community_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    else:
+        user_communities_interactions_dict, item_community_dict = utils.create_user_communities_interaction_dict(B, items, history_u_lists)
 
     model.eval()
     all_items = list(set(history_v_lists.keys()))
@@ -144,14 +157,18 @@ def get_top_k_recommendations(model, device, target_users, history_u_lists, hist
             topk_item_ids = [candidate_items[i] for i in topk_prediction_indices_sorted]
 
             user_item_communities = [item_community_dict[item_id] for item_id in history_u_lists[user_id]]
-            user_diversity = entropy_label_distribution(user_item_communities)
+            user_diversity = utils.entropy_label_distribution(user_item_communities)
 
             recommended_item_communities = [item_community_dict[item_id] for item_id in topk_item_ids]
-            recommendation_diversity = entropy_label_distribution(recommended_item_communities)
+            entropy_item_diversity = utils.entropy_label_distribution(recommended_item_communities)
+            weighted_average_item_diversity = utils.calculate_weighted_average_diversity(user_communities_interactions_dict[user_id])
 
-            results[user_id]['recommendations'] = topk_item_ids
-            results[user_id]['user_diversity'] = user_diversity
-            results[user_id]['recommended_item_diversity'] = recommendation_diversity
+            results[user_id] = {
+                'recommendations' : topk_item_ids,
+                'user_diversity' : user_diversity,
+                'entropy_item_diversity' : entropy_item_diversity,
+                'weighted_average_item_diversity' : weighted_average_item_diversity,
+            }
 
             print(results[user_id])
 
@@ -196,108 +213,23 @@ def train_and_store_model(model, epochs, device, train_loader, test_loader, lr, 
            endure_count += 1
        print("rmse: %.4f, mae:%.4f " % (expected_rmse, mae))
 
+       rmse_mae_dict = {
+           'rmse' : expected_rmse,
+           'mae' : mae
+       }
+
+       with open('./results/' + dataset_name + '/rmse_mae.pickle', 'wb') as handle:
+           pickle.dump(rmse_mae_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
        if endure_count > 5:
            break
 
 
-def evaluate_and_store_recommendations(model, device, test_u, history_u_lists, history_v_lists, k, recommendations_filepath):
+def evaluate_and_store_recommendations(model, device, dataset_name, test_u, history_u_lists, history_v_lists, k):
     target_users = list(set(test_u))
-    results = get_top_k_recommendations(model, device, target_users, history_u_lists, history_v_lists, k)
-    with open(recommendations_filepath, 'wb') as handle:
-        pickle.dump(results, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    results = get_top_k_recommendations(model, device, dataset_name, target_users, history_u_lists, history_v_lists, k)
 
     return results
-
-def create_user_item_bipartite_graph(user_items_dict):
-    users = set()
-    items = set()
-    edges = []
-
-    for user_id in user_items_dict:
-        for item_id in user_items_dict[user_id]:
-            users.add(user_id)
-            items.add(item_id)
-            edges.append((user_id, item_id))
-
-    B = nx.Graph()
-    B.add_nodes_from(users, bipartite=0)
-    B.add_nodes_from(items, bipartite=1)
-    B.add_edges_from(edges)
-
-    return B, users, items
-
-
-def create_user_communities_interaction_dict(B, items, user_items_dict):
-    projected_G = bipartite.projected_graph(B, items)
-    item_community_dict = community_louvain.best_partition(projected_G)
-    community_lists = {}
-    for key in item_community_dict:
-        if item_community_dict[key] not in community_lists:
-            community_lists[item_community_dict[key]] = []
-            community_lists[item_community_dict[key]].append(key)
-        else:
-            community_lists[item_community_dict[key]].append(key)
-
-    user_communities_interactions_dict = {}
-    for userId in user_items_dict:
-        if userId not in user_communities_interactions_dict:
-            user_communities_interactions_dict[userId] = [0] * len(community_lists)
-        for itemId in user_items_dict[userId]:
-            user_communities_interactions_dict[userId][item_community_dict[itemId]] += 1
-
-    return user_communities_interactions_dict, item_community_dict
-
-
-def calculate_weighted_average_user_diversities(user_communities_interactions_dict):
-    user_diversities = {}
-    for userId in user_communities_interactions_dict:
-        user_diversities[userId] = calculate_weighted_average_diversity(user_communities_interactions_dict[userId])
-
-
-def calculate_weighted_average_diversity(user_communities_interactions):
-    user_community_vector = np.array(user_communities_interactions)
-    user_diversity = np.sum(user_community_vector / np.max(user_community_vector)) / user_community_vector.shape[0]
-    return user_diversity
-
-
-# def create_user_diversity_dict(history_u_lists):
-#     B, users, items = create_user_item_bipartite_graph(history_u_lists)
-#
-#     user_communities_interactions_dict, item_community_dict = create_user_communities_interaction_dict(B, items, history_u_lists)
-#
-#     # user_weighted_average_diversities = calculate_weighted_average_user_diversities(user_communities_interactions_dict)
-#
-#     #return user_weighted_average_diversities, item_community_dict
-#
-#     user_entropy_diversity_dict = calculate_item_diversities(history_u_lists, item_community_dict)
-#
-#     return user_entropy_diversity_dict, item_community_dict
-
-
-# Compute entropy of label distribution
-def entropy_label_distribution(labels):
-    n_labels = len(labels)
-    if n_labels <= 1:
-        return 0
-    value, counts = np.unique(labels, return_counts=True)
-    probs = counts / np.float32(n_labels)
-    n_classes = np.count_nonzero(probs)
-    if n_classes <= 1:
-        return 0.0
-    # Compute entropy
-    ent = 0.0
-    for p in probs:
-        ent -= p * np.log(p)
-    return ent
-
-
-def calculate_item_diversities(user_items_dict, item_community_dict):
-    user_recommendation_diversity_dict = {}
-    for user_id in user_items_dict:
-        item_communities = [item_community_dict[item_id] for item_id in user_items_dict[user_id]]
-        item_diversity = entropy_label_distribution(item_communities)
-        user_recommendation_diversity_dict[user_id] = item_diversity
-    return user_recommendation_diversity_dict
 
 
 def main():
@@ -321,14 +253,23 @@ def main():
         use_cuda = True
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    dir_data = './data/' + args.dataset_name
+    dir_data = './data/' + args.dataset_name + '/'
 
-    path_data = dir_data + ".pickle"
+    path_data = dir_data + args.dataset_name + ".pickle"
     data_file = open(path_data, 'rb')
 
-    # TODO instead of pickle.load, this should be loaded from the train/test files
+    train_filepath = './data/' + args.dataset_name + '/train.tsv'
+    test_filepath = './data/' + args.dataset_name + '/test.tsv'
+    social_connections_filepath = './data/' + args.dataset_name + '/social_connections.tsv'
+    train_dict = utils.create_user_item_rating_dict_from_file(train_filepath)
+    test_dict = utils.create_user_item_rating_dict_from_file(test_filepath)
+
     history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, \
-    test_u, test_v, test_r, social_adj_lists, ratings_list = pickle.load(data_file)
+    test_u, test_v, test_r, social_adj_lists, ratings_list = utils.preprocess_data_test(train_dict, test_dict, social_connections_filepath)
+
+    
+    # history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, \
+    # test_u, test_v, test_r, social_adj_lists, ratings_list = pickle.load(data_file)
 
     trainset = torch.utils.data.TensorDataset(torch.LongTensor(train_u), torch.LongTensor(train_v),
                                               torch.FloatTensor(train_r))
@@ -368,10 +309,24 @@ def main():
     model.load_state_dict(torch.load('./checkpoint/' + args.dataset_name + '/model'))
     model.eval()
 
-    # user_diversities, item_community_dict = create_user_diversity_dict(history_u_lists)
+    results = evaluate_and_store_recommendations(model, device, args.dataset_name, test_u, history_u_lists, history_v_lists, args.k)
 
-    results = evaluate_and_store_recommendations(model, device, test_u, history_u_lists, history_v_lists, args.k,
-                                                 './results/' + args.dataset_name + '_recommendations.pickle')
+    with open('./results/' + args.dataset_name + '/recommendations.pickle', 'wb') as handle:
+        pickle.dump(results, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    unique_recommended_items = set()
+    for user_id in results:
+        unique_recommended_items.update(results[user_id]['recommendations'])
+
+    users_items_stats = {
+        'num_users' : num_users,
+        'num_items' : num_items,
+        'num_recommended_items' : unique_recommended_items,
+        'item_coverage' : round(unique_recommended_items/num_items, 2)
+    }
+
+    with open('./results/' + args.dataset_name + '/users_items_stats.pickle', 'wb', 'wb') as handle:
+        pickle.dump(users_items_stats, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 if __name__ == "__main__":
