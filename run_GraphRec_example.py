@@ -153,11 +153,10 @@ def get_top_k_recommendations(model, device, dataset_name, target_users, history
                 candidate_items = [item_id for item_id in list(set(test_v)) if item_id not in history_u_lists[user_id]]
             else:
                 candidate_items = [item_id for item_id in all_items if item_id not in history_u_lists[user_id]]
-            print(len(candidate_items))
-            test_u = torch.tensor(np.repeat(user_id, len(candidate_items))).to(device)
-            test_v = torch.tensor(candidate_items).to(device)
+            u = torch.tensor(np.repeat(user_id, len(candidate_items))).to(device)
+            v = torch.tensor(candidate_items).to(device)
             # multiply this with the mask of excluded recommendations derived from target_users_items
-            val_output = model.forward(test_u, test_v).data.cpu().numpy()
+            val_output = model.forward(u, v).data.cpu().numpy()
             topk_prediction_indices = np.argpartition(val_output, -k)[-k:]
             topk_prediction_indices_sorted = list(np.flip(topk_prediction_indices[np.argsort(val_output[topk_prediction_indices])]))
             topk_item_ids = [candidate_items[i] for i in topk_prediction_indices_sorted]
@@ -273,6 +272,8 @@ def remap_user_item_ids(train_dict, test_dict, social_adj_lists):
             if user_id_2 not in user_id_mapping:
                 continue
             social_adj_lists_remapped[user_id_mapping[user_id_1]].append(user_id_mapping[user_id_2])
+        if len(social_adj_lists_remapped[user_id_mapping[user_id_1]]) == 0:
+            del social_adj_lists_remapped[user_id_mapping[user_id_1]]
 
     # and finally remap the test_dict
     for user_id in test_dict:
@@ -298,10 +299,10 @@ def main():
     parser.add_argument('--embed_dim', type=int, default=64, metavar='N', help='embedding size')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR', help='learning rate')
     parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N', help='input batch size for testing')
-    parser.add_argument('--epochs', type=int, default=1, metavar='N', help='number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=50, metavar='N', help='number of epochs to train')
     parser.add_argument('--k', type=int, default=10, metavar='N', help='number of recommendations to generate per user')
     parser.add_argument('--gpu_id', type=int, default=0, metavar='N', help='gpu id')
-    parser.add_argument('--dataset_name', type=str, default='toy_dataset', help='dataset name')
+    parser.add_argument('--dataset_name', type=str, default='ciao', help='dataset name')
     parser.add_argument('--load_model', type=bool, default=False, help='if this is False, then the model is trained from scratch')
     parser.add_argument('--use_test_set_candidates', type=bool, default=True, help='if this is True, then the candidate items come only from the test set')
     args = parser.parse_args()
@@ -315,7 +316,7 @@ def main():
     dir_data = './data/' + args.dataset_name + '/'
 
     path_data = dir_data + args.dataset_name + ".pickle"
-    data_file = open(path_data, 'rb')
+    # data_file = open(path_data, 'rb')
 
     train_filepath = './data/' + args.dataset_name + '/train.tsv'
     test_filepath = './data/' + args.dataset_name + '/test.tsv'
@@ -387,7 +388,7 @@ def main():
         'item_coverage' : round(len(unique_recommended_items)/num_items, 2)
     }
 
-    with open('./results/' + args.dataset_name + '/users_items_stats.pickle', 'wb', 'wb') as handle:
+    with open('./results/' + args.dataset_name + '/users_items_stats.pickle', 'wb') as handle:
         pickle.dump(users_items_stats, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
