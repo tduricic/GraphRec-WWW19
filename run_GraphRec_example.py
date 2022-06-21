@@ -177,7 +177,7 @@ def get_top_k_recommendations(model, device, dataset_name, target_users, history
 
     return results
 
-def train_and_store_model(model, epochs, device, train_loader, test_loader, lr, dataset_name):
+def train_and_store_model(model, optimizer, epochs, device, train_loader, test_loader, dataset_name):
     """
     ## toy dataset 
     history_u_lists, history_ur_lists:  user's purchased history (item set in training set), and his/her rating score (dict)
@@ -191,7 +191,6 @@ def train_and_store_model(model, epochs, device, train_loader, test_loader, lr, 
     social_adj_lists: user's connected neighborhoods
     ratings_list: rating value from 0.5 to 4.0 (8 opinion embeddings)
     """
-    optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, alpha=0.9)
 
     best_rmse = 9999.0
     best_mae = 9999.0
@@ -210,8 +209,13 @@ def train_and_store_model(model, epochs, device, train_loader, test_loader, lr, 
            best_rmse = expected_rmse
            best_mae = mae
            endure_count = 0
-           best_model = copy.deepcopy(model)
-           torch.save(best_model.state_dict(), './checkpoint/' + dataset_name + '/model')
+           # best_model = copy.deepcopy(model)
+           torch.save({
+               'epoch': epoch,
+               'model_state_dict': model.state_dict(),
+               'optimizer_state_dict': optimizer.state_dict(),
+           }, './checkpoint/' + dataset_name + '/model.pt')
+           # torch.save(best_model.state_dict(), './checkpoint/' + dataset_name + '/model')
        else:
            endure_count += 1
        print("rmse: %.4f, mae:%.4f " % (expected_rmse, mae))
@@ -245,6 +249,7 @@ def main():
     parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N', help='input batch size for testing')
     parser.add_argument('--epochs', type=int, default=20, metavar='N', help='number of epochs to train')
     parser.add_argument('--k', type=int, default=10, metavar='N', help='number of recommendations to generate per user')
+    parser.add_argument('--device', type=str, default='cuda', help='cpu or cuda')
     parser.add_argument('--gpu_id', type=str, default='2', metavar='N', help='gpu id')
     parser.add_argument('--dataset_name', type=str, default='ciao', help='dataset name')
     parser.add_argument('--load_model', type=bool, default=False, help='if this is False, then the model is trained from scratch')
@@ -252,11 +257,11 @@ def main():
     args = parser.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_id
-    use_cuda = False
-    if torch.cuda.is_available():
-        use_cuda = True
-    device = torch.device("cuda" if use_cuda else "cpu")
-    # device = torch.device("cpu")
+    # use_cuda = False
+    # if torch.cuda.is_available():
+    #     use_cuda = True
+    # device = torch.device("cuda" if use_cuda else "cpu")
+    device = torch.device(args.device)
 
     dir_data = './data/' + args.dataset_name + '/'
 
@@ -315,11 +320,15 @@ def main():
 
     # model
     model = GraphRec(enc_u, enc_v_history, r2e).to(device)
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=args.lr, alpha=0.9)
 
-    if args.load_model is False:
-        train_and_store_model(model, args.epochs, device, train_loader, test_loader, args.lr, args.dataset_name)
+    if args.load_model is True:
+        checkpoint = torch.load('./checkpoint/' + args.dataset_name + '/model.pt')
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    else:
+        train_and_store_model(model, optimizer, args.epochs, device, train_loader, test_loader, args.dataset_name)
 
-    model.load_state_dict(torch.load('./checkpoint/' + args.dataset_name + '/model'))
     model.eval()
 
     results = evaluate_and_store_recommendations(model, device, args.dataset_name, train_u, test_u, history_u_lists, history_v_lists, args.k, args.use_test_set_candidates, test_v)
