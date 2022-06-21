@@ -22,6 +22,8 @@ class UV_Encoder(nn.Module):
         tmp_history_uv = []
         tmp_history_r = []
         for node in nodes:
+
+            # TODO this might be problematic, need to check this later (test predictions for item ids that are not part of the training set)
             if int(node) not in self.history_uv_lists and int(node) not in self.history_r_lists:
                 tmp_history_uv.append([])
                 tmp_history_r.append([])
