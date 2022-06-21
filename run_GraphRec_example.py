@@ -228,57 +228,85 @@ def train_and_store_model(model, epochs, device, train_loader, test_loader, lr, 
            break
 
 
-def evaluate_and_store_recommendations(model, device, dataset_name, test_u, history_u_lists, history_v_lists, k, use_test_set_candidates, test_v):
+def evaluate_and_store_recommendations(model, device, dataset_name, train_u, test_u, history_u_lists, history_v_lists, k, use_test_set_candidates, test_v):
     target_users = list(set(test_u))
     results = get_top_k_recommendations(model, device, dataset_name, target_users, history_u_lists, history_v_lists, k, use_test_set_candidates, test_v)
 
     return results
 
 
-def remap_user_item_ids(train_dict, test_dict, social_adj_lists):
-    train_dict_remapped = {}
-    test_dict_remapped = {}
-    social_adj_lists_remapped = {}
+def create_user_id_mapping(train_dict, test_dict, social_adj_lists):
     user_id_mapping = {}
-    item_id_mapping = {}
     user_id_mapping_reversed = {}
-    item_id_mapping_reversed = {}
-
     user_id_counter = 0
-    item_id_counter = 0
-    # first remap the train_dict
+
     for user_id in train_dict:
         if user_id not in user_id_mapping:
             user_id_mapping[user_id] = user_id_counter
             user_id_mapping_reversed[user_id_counter] = user_id
             user_id_counter += 1
+    for user_id in test_dict:
+        if user_id not in user_id_mapping:
+            user_id_mapping[user_id] = user_id_counter
+            user_id_mapping_reversed[user_id_counter] = user_id
+            user_id_counter += 1
+    for user_id in social_adj_lists:
+        if user_id not in user_id_mapping:
+            user_id_mapping[user_id] = user_id_counter
+            user_id_mapping_reversed[user_id_counter] = user_id
+            user_id_counter += 1
+            for user_id in social_adj_lists[user_id]:
+                user_id_mapping[user_id] = user_id_counter
+                user_id_mapping_reversed[user_id_counter] = user_id
+                user_id_counter += 1
+    return user_id_mapping, user_id_mapping_reversed
+
+
+def create_item_id_mapping(train_dict, test_dict):
+    item_id_mapping = {}
+    item_id_mapping_reversed = {}
+    item_id_counter = 0
+
+    for user_id in train_dict:
+        for item_id in train_dict[user_id]:
+            if item_id not in item_id_mapping:
+                item_id_mapping[user_id] = item_id_counter
+                item_id_mapping_reversed[item_id_counter] = user_id
+                item_id_counter += 1
+    for user_id in test_dict:
+        for item_id in test_dict[user_id]:
+            if item_id not in item_id_mapping:
+                item_id_mapping[user_id] = item_id_counter
+                item_id_mapping_reversed[item_id_counter] = user_id
+                item_id_counter += 1
+
+    return item_id_mapping, item_id_mapping_reversed
+
+
+def remap_user_item_ids(train_dict, test_dict, social_adj_lists):
+    train_dict_remapped = {}
+    test_dict_remapped = {}
+    social_adj_lists_remapped = {}
+    user_id_mapping, user_id_mapping_reversed = create_user_id_mapping(train_dict, test_dict, social_adj_lists)
+    item_id_mapping, item_id_mapping_reversed = create_item_id_mapping(train_dict, test_dict)
+
+    # first remap the train_dict
+    for user_id in train_dict:
         if user_id_mapping[user_id] not in train_dict_remapped:
             train_dict_remapped[user_id_mapping[user_id]] = {}
         for item_id in train_dict[user_id]:
-            if item_id not in item_id_mapping:
-                item_id_mapping[item_id] = item_id_counter
-                item_id_mapping_reversed[item_id_counter] = item_id
-                item_id_counter += 1
             rating = train_dict[user_id][item_id]
             train_dict_remapped[user_id_mapping[user_id]][item_id_mapping[item_id]] = rating
 
     # next remap the social_adj_lists
     for user_id_1 in social_adj_lists:
-        if user_id_1 not in user_id_mapping:
-            continue
         if user_id_mapping[user_id_1] not in social_adj_lists_remapped:
             social_adj_lists_remapped[user_id_mapping[user_id_1]] = []
         for user_id_2 in social_adj_lists[user_id_1]:
-            if user_id_2 not in user_id_mapping:
-                continue
             social_adj_lists_remapped[user_id_mapping[user_id_1]].append(user_id_mapping[user_id_2])
-        if len(social_adj_lists_remapped[user_id_mapping[user_id_1]]) == 0:
-            del social_adj_lists_remapped[user_id_mapping[user_id_1]]
 
     # and finally remap the test_dict
     for user_id in test_dict:
-        if user_id not in user_id_mapping:
-            continue
         if user_id_mapping[user_id] not in test_dict_remapped:
             test_dict_remapped[user_id_mapping[user_id]] = {}
         for item_id in test_dict[user_id]:
@@ -299,19 +327,20 @@ def main():
     parser.add_argument('--embed_dim', type=int, default=64, metavar='N', help='embedding size')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR', help='learning rate')
     parser.add_argument('--test_batch_size', type=int, default=1000, metavar='N', help='input batch size for testing')
-    parser.add_argument('--epochs', type=int, default=50, metavar='N', help='number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=20, metavar='N', help='number of epochs to train')
     parser.add_argument('--k', type=int, default=10, metavar='N', help='number of recommendations to generate per user')
-    parser.add_argument('--gpu_id', type=int, default=0, metavar='N', help='gpu id')
+    parser.add_argument('--gpu_id', type=str, default='2', metavar='N', help='gpu id')
     parser.add_argument('--dataset_name', type=str, default='ciao', help='dataset name')
     parser.add_argument('--load_model', type=bool, default=False, help='if this is False, then the model is trained from scratch')
     parser.add_argument('--use_test_set_candidates', type=bool, default=True, help='if this is True, then the candidate items come only from the test set')
     args = parser.parse_args()
 
-    # os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_id)
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_id
     use_cuda = False
     if torch.cuda.is_available():
         use_cuda = True
     device = torch.device("cuda" if use_cuda else "cpu")
+    # device = torch.device("cpu")
 
     dir_data = './data/' + args.dataset_name + '/'
 
@@ -320,16 +349,19 @@ def main():
 
     train_filepath = './data/' + args.dataset_name + '/train.tsv'
     test_filepath = './data/' + args.dataset_name + '/test.tsv'
-    social_connections_filepath = './data/' + args.dataset_name + '/social_connections.tsv'
+    social_connections_filepath = './data/' + args.dataset_name + '/filtered_social_connections.tsv'
     train_dict = utils.create_user_item_rating_dict_from_file(train_filepath)
     test_dict = utils.create_user_item_rating_dict_from_file(test_filepath)
     social_adj_lists = utils.create_social_adj_lists(social_connections_filepath)
 
-    train_dict_remapped, test_dict_remapped, social_adj_lists_remapped, _, _, _, _ = \
-        remap_user_item_ids(train_dict, test_dict, social_adj_lists)
+    # train_dict_remapped, test_dict_remapped, social_adj_lists_remapped, _, _, _, _ = \
+    #     remap_user_item_ids(train_dict, test_dict, social_adj_lists)
+    #
+    # history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, \
+    # test_u, test_v, test_r, ratings_list = utils.preprocess_data_test(train_dict_remapped, test_dict_remapped)
 
     history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, \
-    test_u, test_v, test_r, ratings_list = utils.preprocess_data_test(train_dict_remapped, test_dict_remapped)
+    test_u, test_v, test_r, ratings_list = utils.preprocess_data_test(train_dict, test_dict)
 
     # history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, train_u, train_v, train_r, \
     # test_u, test_v, test_r, social_adj_lists, ratings_list = pickle.load(data_file)
@@ -340,10 +372,10 @@ def main():
                                              torch.FloatTensor(test_r))
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True)
     test_loader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=True)
-    num_users = history_u_lists.__len__()
-    num_items = history_v_lists.__len__()
-    # num_users = max(set(train_u + test_u)) + 1
-    # num_items = max(set(train_v + test_v)) + 1
+    # num_users = history_u_lists.__len__()
+    # num_items = history_v_lists.__len__()
+    num_users = max(set(train_u + test_u)) + 1
+    num_items = max(set(train_v + test_v)) + 1
     num_ratings = ratings_list.__len__()
 
     u2e = nn.Embedding(num_users, args.embed_dim).to(device)
@@ -356,7 +388,9 @@ def main():
     enc_u_history = UV_Encoder(u2e, args.embed_dim, history_u_lists, history_ur_lists, agg_u_history, cuda=device, uv=True)
     # neighbors
     agg_u_social = Social_Aggregator(lambda nodes: enc_u_history(nodes).t(), u2e, args.embed_dim, cuda=device)
-    enc_u = Social_Encoder(lambda nodes: enc_u_history(nodes).t(), args.embed_dim, social_adj_lists_remapped, agg_u_social,
+    # enc_u = Social_Encoder(lambda nodes: enc_u_history(nodes).t(), args.embed_dim, social_adj_lists_remapped, agg_u_social,
+    #                        base_model=enc_u_history, cuda=device)
+    enc_u = Social_Encoder(lambda nodes: enc_u_history(nodes).t(), args.embed_dim, social_adj_lists, agg_u_social,
                            base_model=enc_u_history, cuda=device)
 
     # item feature: user * rating
@@ -372,7 +406,7 @@ def main():
     model.load_state_dict(torch.load('./checkpoint/' + args.dataset_name + '/model'))
     model.eval()
 
-    results = evaluate_and_store_recommendations(model, device, args.dataset_name, test_u, history_u_lists, history_v_lists, args.k, args.use_test_set_candidates, test_v)
+    results = evaluate_and_store_recommendations(model, device, args.dataset_name, train_u, test_u, history_u_lists, history_v_lists, args.k, args.use_test_set_candidates, test_v)
 
     with open('./results/' + args.dataset_name + '/recommendations.pickle', 'wb') as handle:
         pickle.dump(results, handle, protocol=pickle.HIGHEST_PROTOCOL)
