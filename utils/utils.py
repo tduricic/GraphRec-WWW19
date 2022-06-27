@@ -180,3 +180,16 @@ def preprocess_data_test(train_dict, test_dict):
 
     return history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, \
            train_u, train_v, train_r, test_u, test_v, test_r, ratings_list
+
+def preprocess_data_val(train_dict, test_dict, val_dict):
+    history_u_lists = create_history_u_lists(train_dict)
+    history_ur_lists = create_history_ur_lists(train_dict)
+    history_v_lists = create_history_v_lists(train_dict)
+    history_vr_lists = create_history_vr_lists(train_dict)
+    train_u, train_v, train_r = create_uvr(train_dict)
+    test_u, test_v, test_r = create_uvr(test_dict)
+    val_u, val_v, val_r = create_uvr(val_dict)
+    ratings_list = create_ratings_list(train_r + test_r)
+
+    return history_u_lists, history_ur_lists, history_v_lists, history_vr_lists, \
+           train_u, train_v, train_r, test_u, test_v, test_r, val_u, val_v, val_r, ratings_list
