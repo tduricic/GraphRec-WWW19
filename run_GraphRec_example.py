@@ -131,14 +131,12 @@ def get_top_k_recommendations(model, device, dataset_name, target_users, history
             path.exists('./results/' + dataset_name + '/item_community_dict.pickle'):
         user_communities_interactions_dict = pickle.load(user_communities_interactions_dict_filepath)
         item_community_dict = pickle.load(item_community_dict_filepath)
-
-        with open(user_communities_interactions_dict_filepath, 'wb') as handle:
-            pickle.dump(user_communities_interactions_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-        with open(item_community_dict_filepath, 'wb') as handle:
-            pickle.dump(item_community_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
     else:
         user_communities_interactions_dict, item_community_dict = utils.create_user_communities_interaction_dict(B, items, history_u_lists)
+        with open(user_communities_interactions_dict_filepath, 'wb') as handle:
+            pickle.dump(user_communities_interactions_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(item_community_dict_filepath, 'wb') as handle:
+            pickle.dump(item_community_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     model.eval()
     all_items = list(set(history_v_lists.keys()))
@@ -252,7 +250,7 @@ def main():
     parser.add_argument('--device', type=str, default='cuda', help='cpu or cuda')
     parser.add_argument('--gpu_id', type=str, default='2', metavar='N', help='gpu id')
     parser.add_argument('--dataset_name', type=str, default='ciao', help='dataset name')
-    parser.add_argument('--load_model', type=bool, default=False, help='if this is False, then the model is trained from scratch')
+    parser.add_argument('--load_model', type=bool, default=True, help='if this is False, then the model is trained from scratch')
     parser.add_argument('--use_test_set_candidates', type=bool, default=True, help='if this is True, then the candidate items come only from the test set')
     args = parser.parse_args()
 
@@ -336,14 +334,15 @@ def main():
     with open('./results/' + args.dataset_name + '/recommendations.pickle', 'wb') as handle:
         pickle.dump(results, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    unique_recommended_items = set()
+    unique_recommended_items = []
     for user_id in results:
-        unique_recommended_items.update(results[user_id]['recommendations'])
+        unique_recommended_items += results[user_id]['recommendations']
+    unique_recommended_items = set(unique_recommended_items)
 
     users_items_stats = {
         'num_users' : num_users,
         'num_items' : num_items,
-        'num_recommended_items' : unique_recommended_items,
+        'num_recommended_items' : len(unique_recommended_items),
         'item_coverage' : round(len(unique_recommended_items)/num_items, 2)
     }
 
