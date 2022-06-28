@@ -129,8 +129,10 @@ def get_top_k_recommendations(model, device, dataset_name, target_users, history
 
     if path.exists('./results/' + dataset_name + '/user_communities_interactions_dict.pickle') and \
             path.exists('./results/' + dataset_name + '/item_community_dict.pickle'):
-        user_communities_interactions_dict = pickle.load(user_communities_interactions_dict_filepath)
-        item_community_dict = pickle.load(item_community_dict_filepath)
+        with open(user_communities_interactions_dict_filepath, 'rb') as pickle_file:
+            user_communities_interactions_dict = pickle.load(pickle_file)
+        with open(item_community_dict_filepath, 'rb') as pickle_file:
+            item_community_dict = pickle.load(pickle_file)
     else:
         user_communities_interactions_dict, item_community_dict = utils.create_user_communities_interaction_dict(B, items, history_u_lists)
         with open(user_communities_interactions_dict_filepath, 'wb') as handle:
@@ -162,7 +164,10 @@ def get_top_k_recommendations(model, device, dataset_name, target_users, history
             user_item_communities = [item_community_dict[item_id] for item_id in history_u_lists[user_id]]
             user_diversity = utils.entropy_label_distribution(user_item_communities)
 
-            recommended_item_communities = [item_community_dict[item_id] for item_id in topk_item_ids]
+            recommended_item_communities = []
+            for item_id in topk_item_ids:
+                if item_id in item_community_dict:
+                    recommended_item_communities.append(item_community_dict[item_id])
             entropy_item_diversity = utils.entropy_label_distribution(recommended_item_communities)
             weighted_average_item_diversity = utils.calculate_weighted_average_diversity(user_communities_interactions_dict[user_id])
 
@@ -285,13 +290,20 @@ def main():
 
     train_filepath = './data/' + args.dataset_name + '/train.tsv'
     test_filepath = './data/' + args.dataset_name + '/test.tsv'
+    val_filepath = './data/' + args.dataset_name + '/val.tsv'
     social_connections_filepath = './data/' + args.dataset_name + '/filtered_social_connections.tsv'
     train_dict = utils.create_user_item_rating_dict_from_file(train_filepath)
     test_dict = utils.create_user_item_rating_dict_from_file(test_filepath)
+    val_dict = utils.create_user_item_rating_dict_from_file(val_filepath)
     social_adj_lists = utils.create_social_adj_lists(social_connections_filepath)
-    if args.validate == True:
-        val_filepath = './data/' + args.dataset_name + '/val.tsv'
-        val_dict = utils.create_user_item_rating_dict_from_file(val_filepath)
+
+    if args.validate == False:
+        for user_id in val_dict:
+            if user_id not in train_dict:
+                train_dict[user_id] = val_dict[user_id]
+            else:
+                for item_id in val_dict[user_id]:
+                    train_dict[user_id][item_id] = val_dict[user_id][item_id]
 
     # train_dict_remapped, test_dict_remapped, social_adj_lists_remapped, _, _, _, _ = \
     #     remap_user_item_ids(train_dict, test_dict, social_adj_lists)
